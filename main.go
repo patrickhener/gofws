@@ -76,6 +76,7 @@ func main() {
 	go func() {
 		for range signalCh {
 			cancel()
+
 			return
 		}
 	}()
