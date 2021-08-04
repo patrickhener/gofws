@@ -49,7 +49,7 @@ This is a raw request taken from Burp Suite where I insert the payload at the `C
 Again this example output was taken from using the tool against the box `Stratosphere` of HackTheBox.
 
 ```bash
-> ./gofws -req ./test.http -payload ./payload.txt -proxy http://localhost:8080
+> ./gofws -req ./request.http -payload ./payload.txt -proxy http://localhost:8080
 [*] Session ID: 45756
 [*] Setting up fifo shell on target
 [*] Setting up read thread
